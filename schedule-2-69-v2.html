@@ -1,0 +1,1594 @@
+<!DOCTYPE html>
+<!--
+  FIREBASE SETUP (one-time, ~10 minutes):
+  1. Go to https://console.firebase.google.com → Create project
+  2. Project Settings → Add App → Web → Register
+  3. Copy the firebaseConfig object and paste it into FIREBASE_CONFIG below
+  4. Authentication → Sign-in method → Enable Google
+  5. Firestore Database → Create database → Start in test mode
+  Done. Sign in and progress syncs across all devices automatically.
+  Without config: app works fully with localStorage only.
+-->
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ตารางเรียน ปี 2/69</title>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+  import { getFirestore, doc, setDoc, onSnapshot, getDoc }
+    from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  // ── REPLACE WITH YOUR FIREBASE CONFIG ──────────────────────────────────
+  const FIREBASE_CONFIG = {
+    apiKey:            "YOUR_API_KEY",
+    authDomain:        "YOUR_PROJECT.firebaseapp.com",
+    projectId:         "YOUR_PROJECT_ID",
+    storageBucket:     "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId:             "YOUR_APP_ID"
+  };
+  // ───────────────────────────────────────────────────────────────────────
+
+  const FIREBASE_READY = FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY';
+  if (!FIREBASE_READY) return;
+
+  const app  = initializeApp(FIREBASE_CONFIG);
+  const auth = getAuth(app);
+  const db   = getFirestore(app);
+  let unsubscribe = null;
+
+  window._fbSignIn = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch(e) { console.error('Sign-in failed', e); }
+  };
+
+  window._fbSignOut = async () => {
+    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    await signOut(auth);
+  };
+
+  window._fbSync = async (data) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    try { await setDoc(doc(db, 'users', user.uid, 'scheduleData', 'v2'), data); }
+    catch(e) { console.warn('Firestore write failed', e); }
+  };
+
+  onAuthStateChanged(auth, async (user) => {
+    if (user) {
+      const ref  = doc(db, 'users', user.uid, 'scheduleData', 'v2');
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        const remote = snap.data();
+        ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
+          if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
+        });
+        window.saveLocal();
+        document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
+        window.updateSummary();
+      } else {
+        await window._fbSync(window.appData);
+      }
+
+      if (unsubscribe) unsubscribe();
+      unsubscribe = onSnapshot(ref, s => {
+        if (!s.exists()) return;
+        const remote = s.data();
+        ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
+          if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
+        });
+        window.saveLocal();
+        document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
+        window.updateSummary();
+        if (window.currentPanelId && TOPICS[window.currentPanelId]) {
+          window.renderTopics(window.currentPanelId, TOPICS[window.currentPanelId].topics);
+        }
+      });
+    } else {
+      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    }
+  });
+</script>
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── THEME VARIABLES ─────────────────────────────────────────────────── */
+:root {
+  --bg:        #f8f9fc;
+  --surface:   #ffffff;
+  --card:      #ffffff;
+  --border:    #e2e8f0;
+  --text:      #1e293b;
+  --muted:     #64748b;
+  --accent:    #10b981;
+  --active:    #f59e0b;
+  --rust:      #ef4444;
+  --done:      var(--accent);
+  --upcoming:  var(--muted);
+  --done-bg:   rgba(16,185,129,.08);
+  --active-bg: rgba(245,158,11,.08);
+  --card-hover:#f1f5f9;
+  --pomo-bg:   #f1f5f9;
+}
+
+[data-theme="dark"] {
+  --bg:        #0f1117;
+  --surface:   #181c27;
+  --card:      #1e2235;
+  --border:    #2a3050;
+  --text:      #e8eaf6;
+  --muted:     #7986cb;
+  --accent:    #69f0ae;
+  --active:    #ffd740;
+  --rust:      #ff5252;
+  --done-bg:   rgba(105,240,174,.05);
+  --active-bg: rgba(255,215,64,.05);
+  --card-hover:#252a3f;
+  --pomo-bg:   #1e2235;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Sarabun', sans-serif;
+  min-height: 100vh;
+  padding: 24px 16px 100px;
+  transition: background .2s, color .2s;
+}
+
+/* ── HEADER ───────────────────────────────────────────────────────────── */
+.app-header {
+  text-align: center;
+  margin-bottom: 20px;
+  position: relative;
+}
+.app-header h1 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: .03em;
+  margin-bottom: 2px;
+}
+.app-header p {
+  font-size: .75rem;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.leaf-badge {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: .7rem;
+  color: var(--accent);
+  letter-spacing: .06em;
+  font-family: 'IBM Plex Mono', monospace;
+  border: 1px solid rgba(16,185,129,.3);
+  padding: 2px 10px;
+  border-radius: 99px;
+}
+[data-theme="dark"] .leaf-badge { border-color: rgba(105,240,174,.3); }
+
+.header-actions {
+  position: absolute;
+  top: 0; right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.theme-toggle {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: .9rem;
+  cursor: pointer;
+  transition: background .15s;
+}
+.theme-toggle:hover { background: var(--border); }
+
+/* ── THIS WEEK STRIP ──────────────────────────────────────────────────── */
+.this-week {
+  max-width: 700px;
+  margin: 0 auto 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+.tw-header {
+  font-size: .6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+.tw-items { display: flex; flex-direction: column; gap: 8px; }
+.tw-item { display: flex; align-items: flex-start; gap: 10px; }
+.tw-icon { font-size: .95rem; flex-shrink: 0; margin-top: 1px; }
+.tw-label { font-size: .78rem; font-weight: 600; color: var(--text); line-height: 1.3; }
+.tw-detail {
+  font-size: .65rem;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  margin-top: 1px;
+}
+.tw-empty { font-size: .72rem; color: var(--muted); opacity: .6; font-style: italic; }
+
+/* ── TABS ─────────────────────────────────────────────────────────────── */
+.tab-bar {
+  max-width: 700px;
+  margin: 0 auto 20px;
+  display: flex;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+}
+.tab-btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: 'Sarabun', sans-serif;
+  font-size: .82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.tab-btn.active { background: var(--accent); color: #fff; }
+[data-theme="dark"] .tab-btn.active { color: #0f1117; }
+
+/* ── SUMMARY ──────────────────────────────────────────────────────────── */
+.summary {
+  max-width: 700px;
+  margin: 0 auto 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+}
+.summary-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+.summary-title {
+  font-size: .65rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.summary-pct {
+  font-size: 2rem;
+  font-weight: 700;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--accent);
+  line-height: 1;
+}
+.bar-track { height: 2px; background: var(--border); border-radius: 99px; overflow: hidden; margin-bottom: 10px; }
+.bar-fill  { height: 100%; border-radius: 99px; background: var(--accent); transition: width .6s ease; }
+.summary-stats { display: flex; gap: 16px; }
+.stat { font-size: .72rem; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.stat-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.stat-dot.done     { background: var(--done); }
+.stat-dot.active   { background: var(--active); }
+.stat-dot.upcoming { background: var(--upcoming); }
+
+/* ── TIMELINE ─────────────────────────────────────────────────────────── */
+.timeline { position: relative; max-width: 700px; margin: 0 auto; }
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 90px; top: 0; bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.section-title {
+  max-width: 700px;
+  margin: 20px auto 10px;
+  font-size: .63rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  padding-left: 100px;
+  opacity: .5;
+}
+.month-label { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.month-name {
+  width: 80px;
+  text-align: right;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .65rem;
+  font-weight: 600;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.month-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1.5px solid var(--muted);
+  flex-shrink: 0;
+  margin-left: 2px;
+}
+
+/* ── BLOCK CARD ───────────────────────────────────────────────────────── */
+.block { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+.block-date {
+  width: 80px;
+  text-align: right;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: .62rem;
+  color: var(--muted);
+  padding-top: 10px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+.block-line { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; padding-top: 10px; }
+.block-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.block-card {
+  flex: 1;
+  border-radius: 10px;
+  padding: 10px 14px;
+  border-left: 2px solid currentColor;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  transition: background .15s, transform .1s;
+  position: relative;
+}
+.block-card:hover { background: var(--card-hover); transform: translateX(2px); }
+.block-card h3 { font-size: .84rem; font-weight: 600; margin-bottom: 2px; padding-right: 90px; color: var(--text); }
+.block-card .sub { font-size: .69rem; color: var(--muted); line-height: 1.5; }
+.block-card.status-done   { background: var(--done-bg); }
+.block-card.status-active { background: var(--active-bg); }
+
+/* ── ACTIVITY CARD ────────────────────────────────────────────────────── */
+.act-card {
+  flex: 1;
+  border-radius: 10px;
+  padding: 10px 14px;
+  border-left: 2px solid currentColor;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.act-card h3 { font-size: .84rem; font-weight: 600; margin-bottom: 2px; padding-right: 90px; color: var(--text); }
+.act-card .sub { font-size: .69rem; color: var(--muted); line-height: 1.5; }
+.act-card.status-done   { background: var(--done-bg); }
+.act-card.status-active { background: var(--active-bg); }
+.cat-badge {
+  font-size: .6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  padding: 2px 8px;
+  border-radius: 99px;
+  border: 1px solid currentColor;
+  opacity: .8;
+}
+.act-link {
+  font-size: .62rem;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid rgba(16,185,129,.3);
+  border-radius: 5px;
+  padding: 2px 8px;
+  transition: background .1s;
+}
+[data-theme="dark"] .act-link { border-color: rgba(105,240,174,.3); }
+.act-link:hover { background: var(--done-bg); }
+.no-activities {
+  text-align: center;
+  padding: 40px 20px;
+  font-size: .78rem;
+  color: var(--muted);
+  opacity: .6;
+}
+
+/* ── STATUS BADGE ─────────────────────────────────────────────────────── */
+.status-badge {
+  position: absolute;
+  top: 10px; right: 12px;
+  font-size: .61rem;
+  font-weight: 700;
+  font-family: 'IBM Plex Mono', monospace;
+  padding: 3px 9px;
+  border-radius: 99px;
+  letter-spacing: .05em;
+  cursor: pointer;
+  transition: all .15s;
+}
+.act-card .status-badge { cursor: default; }
+.status-badge.done    { background: rgba(16,185,129,.15);  color: var(--done);   border: 1px solid rgba(16,185,129,.3); }
+.status-badge.active  { background: rgba(245,158,11,.15);  color: var(--active); border: 1px solid rgba(245,158,11,.3); }
+.status-badge.upcoming{ background: rgba(100,116,139,.1);  color: var(--muted);  border: 1px solid rgba(100,116,139,.25); }
+[data-theme="dark"] .status-badge.done    { background: rgba(105,240,174,.15); border-color: rgba(105,240,174,.3); }
+[data-theme="dark"] .status-badge.active  { background: rgba(255,215,64,.15);  border-color: rgba(255,215,64,.3); }
+[data-theme="dark"] .status-badge.upcoming{ background: rgba(121,134,203,.1);  border-color: rgba(121,134,203,.25); }
+.status-badge:hover { opacity: .75; }
+
+/* ── CARD PROGRESS ────────────────────────────────────────────────────── */
+.card-progress { margin-top: 8px; }
+.card-bar-track { height: 2px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.card-bar-fill  { height: 100%; border-radius: 99px; background: currentColor; opacity: .45; transition: width .4s ease; }
+.card-days { font-size: .6rem; color: var(--muted); margin-top: 3px; font-family: 'IBM Plex Mono', monospace; }
+.exam-countdown {
+  display: none;
+  font-size: .62rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--rust);
+  font-weight: 600;
+  margin-top: 4px;
+  letter-spacing: .03em;
+}
+.block-card.status-active .exam-countdown { display: block; }
+
+/* ── BREAK & CONCURRENT ───────────────────────────────────────────────── */
+.break-block { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.break-pill {
+  flex: 1;
+  text-align: center;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  opacity: .65;
+}
+.concurrent { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+.concurrent-cards { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.concurrent-card {
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: .7rem;
+  font-weight: 600;
+  border-left: 2px solid currentColor;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+.concurrent-card .sub { font-size: .63rem; font-weight: 400; margin-top: 1px; }
+
+/* ── COLORS (light) ───────────────────────────────────────────────────── */
+[data-color="green"]  { color: #10b981; }
+[data-color="yellow"] { color: #f59e0b; }
+[data-color="orange"] { color: #f97316; }
+[data-color="red"]    { color: #ef4444; }
+[data-color="blue"]   { color: #3b82f6; }
+[data-color="purple"] { color: #a855f7; }
+[data-color="pink"]   { color: #ec4899; }
+[data-color="teal"]   { color: #14b8a6; }
+[data-color="muted"]  { color: var(--muted); }
+
+/* ── COLORS (dark override) ───────────────────────────────────────────── */
+[data-theme="dark"] [data-color="green"]  { color: #69f0ae; }
+[data-theme="dark"] [data-color="yellow"] { color: #ffd740; }
+[data-theme="dark"] [data-color="orange"] { color: #ff9100; }
+[data-theme="dark"] [data-color="red"]    { color: #ff5252; }
+[data-theme="dark"] [data-color="blue"]   { color: #64b5f6; }
+[data-theme="dark"] [data-color="purple"] { color: #ce93d8; }
+[data-theme="dark"] [data-color="pink"]   { color: #f48fb1; }
+[data-theme="dark"] [data-color="teal"]   { color: #4dd0e1; }
+
+/* ── LEGEND ───────────────────────────────────────────────────────────── */
+.legend {
+  max-width: 700px;
+  margin: 24px auto 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.legend-row { width: 100%; font-size: .62rem; color: var(--muted); font-weight: 700; font-family: 'IBM Plex Mono', monospace; margin-bottom: 2px; letter-spacing: .1em; }
+.legend-item { display: flex; align-items: center; gap: 6px; font-size: .67rem; color: var(--muted); }
+.legend-dot  { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.hint { max-width: 700px; margin: 8px auto 0; text-align: center; font-size: .63rem; color: var(--muted); opacity: .45; font-family: 'IBM Plex Mono', monospace; }
+
+/* ── PANEL ────────────────────────────────────────────────────────────── */
+.panel-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 100;
+  backdrop-filter: blur(1px);
+}
+.panel-overlay.open { display: block; }
+.panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 420px;
+  max-width: 100vw;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 28px rgba(0,0,0,.07);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .25s cubic-bezier(.4,0,.2,1);
+  z-index: 101;
+  overflow: hidden;
+}
+.panel.open { transform: translateX(0); }
+.panel-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.panel-head-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+.panel-title { font-size: .88rem; font-weight: 700; color: var(--text); max-width: 340px; line-height: 1.35; }
+.panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 1rem;
+  padding: 2px 6px;
+  line-height: 1;
+  border-radius: 4px;
+  transition: background .1s;
+}
+.panel-close:hover { background: var(--border); }
+.panel-meta {
+  font-size: .62rem;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.panel-pdf-btn {
+  display: none;
+  font-size: .65rem;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid rgba(16,185,129,.3);
+  border-radius: 5px;
+  padding: 2px 9px;
+  transition: background .1s;
+}
+[data-theme="dark"] .panel-pdf-btn { border-color: rgba(105,240,174,.3); }
+.panel-pdf-btn:hover { background: var(--done-bg); }
+.panel-pdf-btn.visible { display: inline-block; }
+.panel-bar-wrap { margin-bottom: 2px; }
+.panel-bar-track { height: 3px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.panel-bar-fill  { height: 100%; background: var(--accent); border-radius: 99px; transition: width .3s; }
+.panel-bar-label { font-size: .6rem; color: var(--muted); font-family: 'IBM Plex Mono', monospace; margin-top: 4px; text-align: right; }
+.panel-body { flex: 1; overflow-y: auto; padding: 14px 18px 24px; }
+.panel-section-label { font-size: .6rem; font-family: 'IBM Plex Mono', monospace; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 8px; margin-top: 4px; opacity: .7; }
+
+/* ── TOPIC LIST ───────────────────────────────────────────────────────── */
+.topic-list { list-style: none; margin-bottom: 20px; }
+.topic-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background .1s;
+}
+.topic-item:last-child { border-bottom: none; }
+.topic-item:hover { background: var(--border); }
+.topic-check {
+  width: 15px; height: 15px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .6rem;
+  transition: all .15s;
+  background: var(--surface);
+  color: #fff;
+}
+.topic-item.done .topic-check { background: var(--accent); border-color: var(--accent); }
+.priority-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.priority-dot.high    { background: var(--rust); }
+.priority-dot.exam    { background: var(--active); }
+.priority-dot.concept { background: var(--muted); }
+.topic-name { font-size: .77rem; color: var(--text); flex: 1; line-height: 1.3; }
+.topic-item.done .topic-name { color: var(--muted); text-decoration: line-through; }
+.panel-notes {
+  width: 100%;
+  min-height: 88px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'Sarabun', sans-serif;
+  font-size: .79rem;
+  color: var(--text);
+  background: var(--bg);
+  resize: vertical;
+  outline: none;
+  transition: border-color .15s;
+  line-height: 1.6;
+}
+.panel-notes:focus { border-color: var(--accent); }
+
+/* ── POMODORO ─────────────────────────────────────────────────────────── */
+.pomo-widget { position: fixed; bottom: 20px; right: 20px; z-index: 90; font-family: 'IBM Plex Mono', monospace; }
+.pomo-pill {
+  background: var(--pomo-bg);
+  color: var(--text);
+  border-radius: 99px;
+  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: default;
+  box-shadow: 0 2px 14px rgba(0,0,0,.1);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+.pomo-pill.is-break { background: var(--done-bg); border-color: rgba(16,185,129,.3); }
+[data-theme="dark"] .pomo-pill.is-break { border-color: rgba(105,240,174,.3); }
+.pomo-time { font-size: .92rem; font-weight: 600; letter-spacing: .06em; min-width: 46px; }
+.pomo-label { font-size: .58rem; opacity: .7; letter-spacing: .08em; min-width: 36px; }
+.pomo-btn {
+  background: rgba(0,0,0,.08);
+  border: none;
+  color: var(--text);
+  border-radius: 50%;
+  width: 22px; height: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .68rem;
+  transition: background .12s;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .pomo-btn { background: rgba(255,255,255,.2); color: #fff; }
+.pomo-btn:hover { background: rgba(0,0,0,.18); }
+[data-theme="dark"] .pomo-btn:hover { background: rgba(255,255,255,.35); }
+
+@media (max-width: 480px) { .panel { width: 100vw; } }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="app-header">
+  <h1>ตารางเรียน ปี 2 / 69</h1>
+  <p>25/05/2026 → 25/05/2027</p>
+  <span class="leaf-badge">◆ MED YEAR 2</span>
+  <div class="header-actions">
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙</button>
+  </div>
+</header>
+
+<!-- THIS WEEK STRIP (always visible) -->
+<div class="this-week">
+  <div class="tw-header">— THIS WEEK · <span id="tw-range"></span> —</div>
+  <div class="tw-items" id="this-week-items">
+    <div class="tw-empty">กำลังโหลด...</div>
+  </div>
+</div>
+
+<!-- TAB BAR -->
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="schedule"    onclick="switchTab('schedule')">ตารางเรียน</button>
+  <button class="tab-btn"        data-tab="activities"  onclick="switchTab('activities')">กิจกรรม</button>
+</div>
+
+<!-- =====================================================================
+     SCHEDULE VIEW
+     ===================================================================== -->
+<div id="schedule-view">
+
+<!-- PROGRESS SUMMARY -->
+<div class="summary">
+  <div class="summary-top">
+    <div>
+      <div class="summary-title">Overall Progress</div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:2px;" id="summary-sub"></div>
+    </div>
+    <div class="summary-pct" id="total-pct">0%</div>
+  </div>
+  <div class="bar-track"><div class="bar-fill" id="total-bar" style="width:0%"></div></div>
+  <div class="summary-stats">
+    <div class="stat"><div class="stat-dot done"></div><span id="cnt-done">0</span> เสร็จแล้ว</div>
+    <div class="stat"><div class="stat-dot active"></div><span id="cnt-active">0</span> กำลังเรียน</div>
+    <div class="stat"><div class="stat-dot upcoming"></div><span id="cnt-upcoming">0</span> ยังไม่ถึง</div>
+  </div>
+</div>
+
+<!-- ===== 2026 ===== -->
+<div class="section-title">— 2569 (2026) —</div>
+<div class="timeline">
+
+  <div class="month-label"><span class="month-name">พ.ค. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">25 พ.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="green"></div></div>
+    <div class="block-card" data-color="green" data-id="b1" data-start="2026-05-25" data-end="2026-06-05">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Fundamental Biomedical Science of Medication (1)</h3>
+      <div class="sub">Pharmacology Basics</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">มิ.ย. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">8 มิ.ย.</div>
+    <div class="block-line"><div class="block-dot" data-color="yellow"></div></div>
+    <div class="block-card" data-color="yellow" data-id="b2" data-start="2026-06-08" data-end="2026-07-10">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Body Defense, Immunity and Infection</h3>
+      <div class="sub">4 หน่วยกิต</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="concurrent">
+    <div class="block-date" style="padding-top:5px;font-size:.59rem;">ตลอดช่วง</div>
+    <div class="concurrent-cards">
+      <div class="concurrent-card" data-color="blue">Fundamental of Medical Profession I (1)<div class="sub">วิเคราะห์สื่อ (บ้าน)</div></div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">ก.ค. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">13 ก.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="orange"></div></div>
+    <div class="block-card" data-color="orange" data-id="b3" data-start="2026-07-13" data-end="2026-08-21">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Respiratory System</h3>
+      <div class="sub">5 หน่วยกิต · 6 wks (รวมวันหยุด สปว.)</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="concurrent">
+    <div class="block-date" style="padding-top:5px;font-size:.59rem;">ตลอดช่วง</div>
+    <div class="concurrent-cards">
+      <div class="concurrent-card" data-color="blue">Fundamental of Medical Profession I (2)<div class="sub">วิเคราะห์สื่อ</div></div>
+      <div class="concurrent-card" data-color="pink">Critical English Listening and Reading (2)<div class="sub">ภาษาอังกฤษ</div></div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">ส.ค. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">24 ส.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="yellow"></div></div>
+    <div class="block-card" data-color="yellow" data-id="b4" data-start="2026-08-24" data-end="2026-10-09">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Cardiovascular System</h3>
+      <div class="sub">5 หน่วยกิต · 7 wks (รวมวันหยุดกฤษฎาภิเษก)</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">ต.ค. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">12 ต.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="teal"></div></div>
+    <div class="block-card" data-color="teal" data-id="b5" data-start="2026-10-12" data-end="2026-11-13">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Endocrine System &amp; Metabolism</h3>
+      <div class="sub">4 หน่วยกิต · 5 wks</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">พ.ย.-ธ.ค. 26</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">16 พ.ย.</div>
+    <div class="block-line"><div class="block-dot" data-color="teal"></div></div>
+    <div class="block-card" data-color="teal" data-id="b6" data-start="2026-11-16" data-end="2026-12-26">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Digestive System and Nutrition</h3>
+      <div class="sub">5 หน่วยกิต</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="break-block">
+    <div class="block-date">ปลาย ธ.ค.</div>
+    <div style="width:10px;flex-shrink:0;"></div>
+    <div class="break-pill">— New Year Break · Syringe Games 15-17 ม.ค. 2570 —</div>
+  </div>
+
+</div>
+
+<!-- ===== 2027 ===== -->
+<div class="section-title">— 2570 (2027) —</div>
+<div class="timeline">
+
+  <div class="month-label"><span class="month-name">ม.ค.-มี.ค. 27</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">18 ม.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="purple"></div></div>
+    <div class="block-card" data-color="purple" data-id="b7" data-start="2027-01-18" data-end="2027-03-06">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Urinary and Reproductive System</h3>
+      <div class="sub">5 หน่วยกิต · 7 wks</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="concurrent">
+    <div class="block-date" style="padding-top:5px;font-size:.59rem;">ตลอดช่วง</div>
+    <div class="concurrent-cards">
+      <div class="concurrent-card" data-color="blue">Fundamental of Medical Profession I (2)<div class="sub">บ้าน/แจ้งวันส่ง</div></div>
+      <div class="concurrent-card" data-color="pink">Critical English Listening and Reading (2)<div class="sub">บ้าน/แจ้งวันส่ง</div></div>
+    </div>
+  </div>
+
+  <div class="month-label"><span class="month-name">มี.ค. 27</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">9 มี.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="green"></div></div>
+    <div class="block-card" data-color="green" data-id="b8" data-start="2027-03-09" data-end="2027-03-27">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>General Experiential Learning Electives</h3>
+      <div class="sub">3 หน่วยกิต (online) + Exercise for Holistic Health (1) · 16:00-17:30</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="break-block">
+    <div class="block-date">เม.ย. ต้น</div>
+    <div style="width:10px;flex-shrink:0;"></div>
+    <div class="break-pill">— Break —</div>
+  </div>
+
+  <div class="month-label"><span class="month-name">เม.ย. 27</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">เม.ย.</div>
+    <div class="block-line"><div class="block-dot" data-color="yellow"></div></div>
+    <div class="block-card" data-color="yellow" data-id="b9" data-start="2027-04-12" data-end="2027-04-25">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Community Health Immersion II (2)</h3>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="block" style="margin-top:4px;">
+    <div class="block-date"></div>
+    <div class="block-line"><div class="block-dot" data-color="green"></div></div>
+    <div class="block-card" data-color="green" data-id="b10" data-start="2027-04-12" data-end="2027-04-25">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Fundamental of Health System Sciences (1)</h3>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="break-block">
+    <div class="block-date">กลาง เม.ย.</div>
+    <div style="width:10px;flex-shrink:0;"></div>
+    <div class="break-pill">— Break —</div>
+  </div>
+
+  <div class="month-label"><span class="month-name">พ.ค. 27</span><div class="month-dot"></div></div>
+  <div class="block">
+    <div class="block-date">พ.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="teal"></div></div>
+    <div class="block-card" data-color="teal" data-id="b11" data-start="2027-05-03" data-end="2027-05-23">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Community Health Development</h3>
+      <div class="sub">CPH, CPHO, PHO, CHO, PHN</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="block" style="margin-top:4px;">
+    <div class="block-date">พ.ค.-มิ.ย.</div>
+    <div class="block-line"><div class="block-dot" data-color="orange"></div></div>
+    <div class="block-card" data-color="orange" data-id="b12" data-start="2027-05-24" data-end="2027-06-20">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Medical Research Operation (3) — Part I</h3>
+      <div class="sub">สมร.ชั้น 3</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+  <div class="block" style="margin-top:4px;">
+    <div class="block-date">ช่วงนี้ด้วย</div>
+    <div class="block-line"><div class="block-dot" data-color="pink"></div></div>
+    <div class="block-card" data-color="pink" data-id="b13" data-start="2027-05-03" data-end="2027-05-23">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Proposed Develop Medical Research (2)</h3>
+      <div class="sub">สมร.ชั้น 2</div>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="break-block" style="margin-top:12px;">
+    <div class="block-date">มิ.ย. 27</div>
+    <div style="width:10px;flex-shrink:0;"></div>
+    <div class="break-pill">— End of Year Break —</div>
+  </div>
+
+  <div class="block" style="margin-top:10px;">
+    <div class="block-date">มิ.ย.-ก.ค.</div>
+    <div class="block-line"><div class="block-dot" data-color="red"></div></div>
+    <div class="block-card" data-color="red" data-id="b14" data-start="2027-06-21" data-end="2027-07-11">
+      <span class="status-badge upcoming">UPCOMING</span>
+      <h3>Re-Exam · สอบซ่อม</h3>
+      <div class="exam-countdown"></div>
+      <div class="card-progress">
+        <div class="card-bar-track"><div class="card-bar-fill" style="width:0%"></div></div>
+        <div class="card-days"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- LEGEND -->
+<div class="legend">
+  <div class="legend-row">STATUS</div>
+  <div class="legend-item" style="color:var(--done)"><div class="legend-dot"></div>เสร็จแล้ว (DONE)</div>
+  <div class="legend-item" style="color:var(--accent)"><div class="legend-dot"></div>กำลังเรียน (ACTIVE)</div>
+  <div class="legend-item" style="color:var(--muted)"><div class="legend-dot"></div>ยังไม่ถึง (UPCOMING)</div>
+  <div class="legend-row" style="margin-top:8px;">PRIORITY</div>
+  <div class="legend-item" style="color:var(--rust)"><div class="legend-dot"></div>HIGH-YIELD</div>
+  <div class="legend-item" style="color:var(--active)"><div class="legend-dot"></div>EXAM</div>
+  <div class="legend-item" style="color:var(--muted)"><div class="legend-dot"></div>CONCEPT</div>
+</div>
+<div class="hint">กดที่ card เพื่อดู topics · กด badge เพื่อเปลี่ยน status</div>
+
+</div><!-- /#schedule-view -->
+
+<!-- =====================================================================
+     ACTIVITIES VIEW
+     ===================================================================== -->
+<div id="activities-view" style="display:none;">
+  <div class="timeline" id="activities-timeline">
+    <div class="no-activities">กำลังโหลด...</div>
+  </div>
+</div>
+
+<!-- PANEL -->
+<div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
+<div class="panel" id="panel" role="dialog" aria-modal="true">
+  <div class="panel-head">
+    <div class="panel-head-top">
+      <div class="panel-title" id="panel-title"></div>
+      <button class="panel-close" onclick="closePanel()" aria-label="ปิด">✕</button>
+    </div>
+    <div class="panel-meta">
+      <span id="panel-meta-date"></span>
+      <a class="panel-pdf-btn" id="panel-pdf-btn" target="_blank" rel="noopener">PDF ↗</a>
+    </div>
+    <div class="panel-bar-wrap">
+      <div class="panel-bar-track"><div class="panel-bar-fill" id="panel-bar-fill" style="width:0%"></div></div>
+      <div class="panel-bar-label" id="panel-bar-label">0 / 0 topics</div>
+    </div>
+  </div>
+  <div class="panel-body">
+    <div class="panel-section-label">Topics</div>
+    <ul class="topic-list" id="panel-topics"></ul>
+    <div class="panel-section-label">Notes</div>
+    <textarea class="panel-notes" id="panel-notes" placeholder="จดโน้ตสั้นๆ เกี่ยวกับวิชานี้..."></textarea>
+  </div>
+</div>
+
+<!-- POMODORO -->
+<div class="pomo-widget">
+  <div class="pomo-pill" id="pomo-pill">
+    <span class="pomo-time" id="pomo-time">25:00</span>
+    <span class="pomo-label" id="pomo-label">FOCUS</span>
+    <button class="pomo-btn" id="pomo-play" onclick="togglePomo(event)" title="Play/Pause">▶</button>
+    <button class="pomo-btn" onclick="resetPomo(event)" title="Reset">↺</button>
+  </div>
+</div>
+
+<script>
+// ── THEME ─────────────────────────────────────────────────────────────────
+function initTheme() {
+  if (localStorage.getItem('theme-pref') === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    document.getElementById('theme-toggle').textContent = '☀';
+  }
+}
+function toggleTheme() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (isDark) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('theme-pref', 'light');
+    document.getElementById('theme-toggle').textContent = '🌙';
+  } else {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    localStorage.setItem('theme-pref', 'dark');
+    document.getElementById('theme-toggle').textContent = '☀';
+  }
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab)
+  );
+  document.getElementById('schedule-view').style.display   = tab === 'schedule'    ? '' : 'none';
+  document.getElementById('activities-view').style.display = tab === 'activities'  ? '' : 'none';
+}
+
+// ── CURRICULUM DATA ───────────────────────────────────────────────────────
+// ── EDIT TOPICS HERE ─────────────────────────────────────────────────────
+const TOPICS = {
+  b1: { name:"Fundamental Biomedical Science of Medication (1)", pdf:"", topics:[
+    {id:"b1-t1", name:"Introduction to Pharmacology",                  priority:"concept"},
+    {id:"b1-t2", name:"Pharmacokinetics: Absorption & Distribution",   priority:"high"},
+    {id:"b1-t3", name:"Pharmacokinetics: Metabolism & Excretion",      priority:"high"},
+    {id:"b1-t4", name:"Pharmacodynamics & Drug-Receptor Interactions", priority:"high"},
+    {id:"b1-t5", name:"Drug Interactions",                             priority:"exam"},
+    {id:"b1-t6", name:"Adverse Drug Reactions",                        priority:"exam"},
+  ]},
+  b2: { name:"Body Defense, Immunity and Infection", pdf:"", topics:[
+    {id:"b2-t1",  name:"Innate Immunity",                              priority:"high"},
+    {id:"b2-t2",  name:"Adaptive Immunity: B Cells & Antibodies",      priority:"high"},
+    {id:"b2-t3",  name:"Adaptive Immunity: T Cells & CMI",             priority:"high"},
+    {id:"b2-t4",  name:"Complement System",                            priority:"exam"},
+    {id:"b2-t5",  name:"Hypersensitivity Reactions (Type I–IV)",       priority:"high"},
+    {id:"b2-t6",  name:"Autoimmunity",                                 priority:"exam"},
+    {id:"b2-t7",  name:"Immunodeficiency",                             priority:"exam"},
+    {id:"b2-t8",  name:"Bacterial Pathogenesis",                       priority:"high"},
+    {id:"b2-t9",  name:"Viral Pathogenesis",                           priority:"high"},
+    {id:"b2-t10", name:"Fungal & Parasitic Infections",                priority:"exam"},
+  ]},
+  b3: { name:"Respiratory System", pdf:"", topics:[
+    {id:"b3-t1",  name:"Respiratory Anatomy",                          priority:"high"},
+    {id:"b3-t2",  name:"Pulmonary Physiology: Ventilation",            priority:"high"},
+    {id:"b3-t3",  name:"Gas Exchange & O₂/CO₂ Transport",             priority:"high"},
+    {id:"b3-t4",  name:"Lung Mechanics & Spirometry",                  priority:"high"},
+    {id:"b3-t5",  name:"Asthma",                                       priority:"high"},
+    {id:"b3-t6",  name:"COPD",                                         priority:"high"},
+    {id:"b3-t7",  name:"Pneumonia",                                    priority:"high"},
+    {id:"b3-t8",  name:"Tuberculosis",                                 priority:"exam"},
+    {id:"b3-t9",  name:"Lung Cancer",                                  priority:"exam"},
+    {id:"b3-t10", name:"Respiratory Pharmacology",                     priority:"high"},
+    {id:"b3-t11", name:"Respiratory Failure & ARDS",                   priority:"high"},
+  ]},
+  b4: { name:"Cardiovascular System", pdf:"", topics:[
+    {id:"b4-t1",  name:"Cardiac Anatomy & Histology",                  priority:"high"},
+    {id:"b4-t2",  name:"Cardiac Physiology & Cycle",                   priority:"high"},
+    {id:"b4-t3",  name:"ECG: Basics & Interpretation",                 priority:"high"},
+    {id:"b4-t4",  name:"Hypertension",                                 priority:"high"},
+    {id:"b4-t5",  name:"Heart Failure",                                priority:"high"},
+    {id:"b4-t6",  name:"Arrhythmias",                                  priority:"high"},
+    {id:"b4-t7",  name:"Coronary Artery Disease (IHD)",                priority:"high"},
+    {id:"b4-t8",  name:"Cardiomyopathy & Myocarditis",                 priority:"exam"},
+    {id:"b4-t9",  name:"Valvular Heart Disease",                       priority:"exam"},
+    {id:"b4-t10", name:"Cardiovascular Pharmacology",                  priority:"high"},
+    {id:"b4-t11", name:"Dyslipidemia & Statins",                       priority:"exam"},
+  ]},
+  b5: { name:"Endocrine System & Metabolism", pdf:"", topics:[
+    {id:"b5-t1",  name:"Hypothalamus & Pituitary Gland",               priority:"high"},
+    {id:"b5-t2",  name:"Thyroid: Anatomy & Physiology",                priority:"high"},
+    {id:"b5-t3",  name:"Thyroid Diseases (Hyper/Hypothyroidism)",      priority:"high"},
+    {id:"b5-t4",  name:"Thyroid Pharmacology",                         priority:"exam"},
+    {id:"b5-t5",  name:"Adrenal Cortex & Glucocorticoids",             priority:"high"},
+    {id:"b5-t6",  name:"Adrenal Medulla & Catecholamines",             priority:"exam"},
+    {id:"b5-t7",  name:"Parathyroid & Calcium Metabolism",             priority:"high"},
+    {id:"b5-t8",  name:"Diabetes Mellitus (Type 1 & 2)",               priority:"high"},
+    {id:"b5-t9",  name:"Insulin & Antidiabetic Drugs",                 priority:"high"},
+    {id:"b5-t10", name:"Metabolic Syndrome & Obesity",                 priority:"exam"},
+  ]},
+  b6: { name:"Digestive System and Nutrition", pdf:"", topics:[
+    {id:"b6-t1",  name:"GI Anatomy & Histology",                       priority:"high"},
+    {id:"b6-t2",  name:"Gastric Acid Secretion & PUD",                 priority:"high"},
+    {id:"b6-t3",  name:"GI Motility & Absorption",                     priority:"high"},
+    {id:"b6-t4",  name:"Liver: Anatomy & Physiology",                  priority:"high"},
+    {id:"b6-t5",  name:"Viral Hepatitis",                              priority:"high"},
+    {id:"b6-t6",  name:"Liver Cirrhosis & Portal Hypertension",        priority:"high"},
+    {id:"b6-t7",  name:"Pancreas Exocrine & Pancreatitis",             priority:"exam"},
+    {id:"b6-t8",  name:"Inflammatory Bowel Disease",                   priority:"high"},
+    {id:"b6-t9",  name:"Colorectal Cancer",                            priority:"exam"},
+    {id:"b6-t10", name:"GI Pharmacology",                              priority:"exam"},
+    {id:"b6-t11", name:"Nutrition & Malnutrition",                     priority:"exam"},
+  ]},
+  b7: { name:"Urinary and Reproductive System", pdf:"", topics:[
+    {id:"b7-t1",  name:"Renal Anatomy & Nephron",                      priority:"high"},
+    {id:"b7-t2",  name:"GFR & Renal Filtration",                       priority:"high"},
+    {id:"b7-t3",  name:"Tubular Reabsorption & Secretion",             priority:"high"},
+    {id:"b7-t4",  name:"Acid-Base Regulation",                         priority:"high"},
+    {id:"b7-t5",  name:"Na & K Electrolyte Disorders",                 priority:"high"},
+    {id:"b7-t6",  name:"Glomerulonephritis & Nephrotic Syndrome",      priority:"high"},
+    {id:"b7-t7",  name:"AKI & CKD",                                    priority:"high"},
+    {id:"b7-t8",  name:"Diuretics",                                    priority:"high"},
+    {id:"b7-t9",  name:"Male Reproductive Physiology",                 priority:"exam"},
+    {id:"b7-t10", name:"Female Reproductive & Menstrual Cycle",        priority:"exam"},
+    {id:"b7-t11", name:"Contraception",                                priority:"exam"},
+  ]},
+  b8: { name:"General Experiential Learning Electives", pdf:"", topics:[
+    {id:"b8-t1", name:"Elective Course Content",                       priority:"concept"},
+    {id:"b8-t2", name:"Exercise Physiology Basics",                    priority:"concept"},
+    {id:"b8-t3", name:"Holistic Health Concepts",                      priority:"concept"},
+  ]},
+  b9: { name:"Community Health Immersion II (2)", pdf:"", topics:[
+    {id:"b9-t1", name:"Community Health Assessment",                   priority:"exam"},
+    {id:"b9-t2", name:"Epidemiology Concepts",                         priority:"exam"},
+    {id:"b9-t3", name:"Health Promotion Strategies",                   priority:"exam"},
+  ]},
+  b10: { name:"Fundamental of Health System Sciences (1)", pdf:"", topics:[
+    {id:"b10-t1", name:"Thai Health System Structure",                 priority:"exam"},
+    {id:"b10-t2", name:"Healthcare Financing (UC Scheme)",             priority:"exam"},
+    {id:"b10-t3", name:"Primary Health Care",                          priority:"exam"},
+  ]},
+  b11: { name:"Community Health Development", pdf:"", topics:[
+    {id:"b11-t1", name:"Community Diagnosis Methods",                  priority:"exam"},
+    {id:"b11-t2", name:"Primary Care & Prevention Programs",           priority:"exam"},
+    {id:"b11-t3", name:"Community Health Programs (CPH, PHO)",         priority:"concept"},
+  ]},
+  b12: { name:"Medical Research Operation (3) — Part I", pdf:"", topics:[
+    {id:"b12-t1", name:"Research Methodology",                         priority:"exam"},
+    {id:"b12-t2", name:"Biostatistics Basics",                         priority:"exam"},
+    {id:"b12-t3", name:"Evidence-Based Medicine",                      priority:"high"},
+  ]},
+  b13: { name:"Proposed Develop Medical Research (2)", pdf:"", topics:[
+    {id:"b13-t1", name:"Literature Review",                            priority:"exam"},
+    {id:"b13-t2", name:"Research Proposal Writing",                    priority:"exam"},
+  ]},
+  b14: { name:"Re-Exam · สอบซ่อม", pdf:"", topics:[
+    {id:"b14-t1", name:"Review All Block Material",                    priority:"high"},
+  ]},
+};
+
+// ── ACTIVITIES DATA ───────────────────────────────────────────────────────
+// ── ADD ACTIVITIES HERE ──────────────────────────────────────────────────
+// เพิ่ม object ใหม่ใน ACTIVITIES array
+// date format ในโค้ด: "YYYY-MM-DD"  →  แสดงผล: "DD-MM-YYYY"
+// endDate: ถ้ากิจกรรม 1 วัน ใส่วันเดียวกับ date
+// category: "วิชาการ" | "กีฬา" | "สังคม" | "สโมสร"
+// link: URL หรือ "" ถ้าไม่มี
+// ─────────────────────────────────────────────────────────────────────────
+const ACTIVITIES = [
+  {
+    id: "a1",
+    title: "ปฐมนิเทศปี 2",
+    date: "2026-06-05",
+    endDate: "2026-06-05",
+    location: "ห้อง A101",
+    link: "",
+    category: "วิชาการ",
+    visibleTo: "public"
+  }
+];
+
+// ── STATE ─────────────────────────────────────────────────────────────────
+const STATES = ['upcoming','active','done'];
+const LABELS = { upcoming:'UPCOMING', active:'ACTIVE', done:'DONE' };
+const LS_KEY = 'schedule-2-69-v2';
+
+window.appData = { blockStatus:{}, topicDone:{}, notes:{}, pdfLinks:{} };
+
+window.saveLocal = function() {
+  localStorage.setItem(LS_KEY, JSON.stringify(window.appData));
+};
+
+function loadLocal() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_KEY));
+    if (saved) window.appData = saved;
+  } catch(e) {}
+}
+
+function syncFirestore() {
+  if (typeof window._fbSync === 'function') window._fbSync(window.appData);
+}
+
+// ── DATE HELPERS ──────────────────────────────────────────────────────────
+const today = new Date(); today.setHours(0,0,0,0);
+function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
+function parseLocalDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function autoStatus(start, end) {
+  const s = parseLocalDate(start), e = parseLocalDate(end);
+  if (today > e)  return 'done';
+  if (today >= s) return 'active';
+  return 'upcoming';
+}
+
+// ── THIS WEEK STRIP ───────────────────────────────────────────────────────
+function renderThisWeek() {
+  const dow    = today.getDay();
+  const monday = new Date(today); monday.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+  const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+
+  const thMonths = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
+  const fmt = d => `${d.getDate()} ${thMonths[d.getMonth()]}`;
+  document.getElementById('tw-range').textContent = `${fmt(monday)}–${fmt(sunday)}`;
+
+  const items = [];
+
+  document.querySelectorAll('.block-card[data-id]').forEach(card => {
+    const status = window.appData.blockStatus[card.dataset.id] || autoStatus(card.dataset.start, card.dataset.end);
+    if (status === 'active') {
+      const remaining = daysBetween(today, new Date(card.dataset.end));
+      items.push({ icon:'📚', label: card.querySelector('h3').textContent, detail: `เหลือ ${remaining} วัน` });
+    }
+  });
+
+  const thDays = ['อา','จ','อ','พ','พฤ','ศ','ส'];
+  ACTIVITIES.forEach(a => {
+    const d = parseLocalDate(a.date);
+    if (d >= monday && d <= sunday) {
+      const dd = String(d.getDate()).padStart(2,'0');
+      const mm = String(d.getMonth()+1).padStart(2,'0');
+      items.push({ icon:'📅', label: a.title, detail: `${thDays[d.getDay()]} ${dd}-${mm}` });
+    }
+  });
+
+  const container = document.getElementById('this-week-items');
+  if (items.length === 0) {
+    container.innerHTML = '<div class="tw-empty">ไม่มีกิจกรรมหรือวิชาพิเศษสัปดาห์นี้</div>';
+    return;
+  }
+  container.innerHTML = items.map(item => `
+    <div class="tw-item">
+      <span class="tw-icon">${item.icon}</span>
+      <div>
+        <div class="tw-label">${item.label}</div>
+        <div class="tw-detail">${item.detail}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── ACTIVITIES TIMELINE ───────────────────────────────────────────────────
+const CAT_COLOR = { วิชาการ:'blue', กีฬา:'orange', สังคม:'purple', สโมสร:'green' };
+
+function renderActivities() {
+  const container = document.getElementById('activities-timeline');
+  if (!ACTIVITIES.length) {
+    container.innerHTML = '<div class="no-activities">ยังไม่มีกิจกรรม</div>';
+    return;
+  }
+  const sorted = [...ACTIVITIES].sort((a, b) => a.date.localeCompare(b.date));
+  container.innerHTML = sorted.map(a => {
+    const d    = parseLocalDate(a.date);
+    const dd   = String(d.getDate()).padStart(2,'0');
+    const mm   = String(d.getMonth()+1).padStart(2,'0');
+    const yyyy = d.getFullYear();
+    const status = autoStatus(a.date, a.endDate || a.date);
+    const col    = CAT_COLOR[a.category] || 'muted';
+    const actClass = status === 'done' ? 'status-done' : status === 'active' ? 'status-active' : '';
+    return `
+      <div class="block">
+        <div class="block-date">${dd}-${mm}-${yyyy}</div>
+        <div class="block-line"><div class="block-dot" data-color="${col}"></div></div>
+        <div class="act-card ${actClass}" data-color="${col}">
+          <span class="status-badge ${status}">${LABELS[status]}</span>
+          <h3>${a.title}</h3>
+          ${a.location ? `<div class="sub">${a.location}</div>` : ''}
+          <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="cat-badge" data-color="${col}">${a.category}</span>
+            ${a.link && /^https?:\/\//i.test(a.link) ? `<a class="act-link" href="${a.link}" target="_blank" rel="noopener">ลิงก์ ↗</a>` : ''}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── CARD RENDER ───────────────────────────────────────────────────────────
+window.updateCard = function(card) {
+  const id     = card.dataset.id;
+  const start  = parseLocalDate(card.dataset.start);
+  const end    = parseLocalDate(card.dataset.end);
+  const status = window.appData.blockStatus[id] || autoStatus(card.dataset.start, card.dataset.end);
+
+  const badge = card.querySelector('.status-badge');
+  badge.className  = 'status-badge ' + status;
+  badge.textContent = LABELS[status];
+
+  card.classList.remove('status-done','status-active');
+  if (status === 'done')   card.classList.add('status-done');
+  if (status === 'active') card.classList.add('status-active');
+
+  const fill   = card.querySelector('.card-bar-fill');
+  const daysEl = card.querySelector('.card-days');
+  const cdEl   = card.querySelector('.exam-countdown');
+  const total  = daysBetween(start, end);
+
+  let pct = 0, daysText = '';
+  if (status === 'done') {
+    pct = 100; daysText = 'เสร็จแล้ว ✓';
+  } else if (status === 'active') {
+    const elapsed   = daysBetween(start, today);
+    pct = Math.min(100, Math.max(0, Math.round(elapsed / total * 100)));
+    const remaining = daysBetween(today, end);
+    daysText = `เหลืออีก ${remaining} วัน`;
+    if (cdEl) cdEl.textContent = `สอบอีก ${remaining} วัน`;
+  } else {
+    const daysUntil = daysBetween(today, start);
+    daysText = `อีก ${daysUntil} วันจะเริ่ม`;
+  }
+  fill.style.width = pct + '%';
+  daysEl.textContent = daysText;
+};
+
+function cycleStatus(card) {
+  const id = card.dataset.id;
+  const current = window.appData.blockStatus[id] || autoStatus(card.dataset.start, card.dataset.end);
+  window.appData.blockStatus[id] = STATES[(STATES.indexOf(current) + 1) % STATES.length];
+  window.saveLocal(); syncFirestore();
+  window.updateCard(card); window.updateSummary(); renderThisWeek();
+}
+
+// ── SUMMARY ───────────────────────────────────────────────────────────────
+window.updateSummary = function() {
+  const cards = document.querySelectorAll('.block-card[data-id]');
+  let done = 0, active = 0, upcoming = 0, totalW = 0, doneW = 0;
+  cards.forEach(card => {
+    const id     = card.dataset.id;
+    const status = window.appData.blockStatus[id] || autoStatus(card.dataset.start, card.dataset.end);
+    const start  = parseLocalDate(card.dataset.start);
+    const end    = parseLocalDate(card.dataset.end);
+    const w      = daysBetween(start, end);
+    totalW += w;
+    if (status === 'done') {
+      done++; doneW += w;
+    } else if (status === 'active') {
+      active++;
+      doneW += Math.min(w, Math.max(0, daysBetween(start, today)));
+    } else upcoming++;
+  });
+  const pct = totalW ? Math.round(doneW / totalW * 100) : 0;
+  document.getElementById('total-pct').textContent    = pct + '%';
+  document.getElementById('total-bar').style.width    = pct + '%';
+  document.getElementById('cnt-done').textContent     = done;
+  document.getElementById('cnt-active').textContent   = active;
+  document.getElementById('cnt-upcoming').textContent = upcoming;
+
+  const yearStart = new Date('2026-05-25');
+  const yearEnd   = new Date('2027-05-25');
+  const totalDays = daysBetween(yearStart, yearEnd);
+  const elapsed   = Math.min(totalDays, Math.max(0, daysBetween(yearStart, today)));
+  const remaining = Math.max(0, daysBetween(today, yearEnd));
+  document.getElementById('summary-sub').textContent =
+    `ผ่านไปแล้ว ${elapsed} วัน · เหลืออีก ${remaining} วัน`;
+};
+
+// ── PANEL ──────────────────────────────────────────────────────────────────
+window.currentPanelId = null;
+
+function openPanel(blockId) {
+  const data = TOPICS[blockId];
+  if (!data) return;
+  window.currentPanelId = blockId;
+  document.getElementById('panel-title').textContent = data.name;
+
+  const card  = document.querySelector(`.block-card[data-id="${blockId}"]`);
+  const start = card ? card.dataset.start : '';
+  const end   = card ? card.dataset.end   : '';
+  document.getElementById('panel-meta-date').textContent =
+    start && end ? `${start} → ${end}` : '';
+
+  const pdfUrl = window.appData.pdfLinks[blockId] || data.pdf || '';
+  const pdfBtn = document.getElementById('panel-pdf-btn');
+  if (pdfUrl) { pdfBtn.href = pdfUrl; pdfBtn.classList.add('visible'); }
+  else        { pdfBtn.href = '#';    pdfBtn.classList.remove('visible'); }
+
+  window.renderTopics(blockId, data.topics);
+
+  const notesEl = document.getElementById('panel-notes');
+  notesEl.value   = window.appData.notes[blockId] || '';
+  notesEl.oninput = () => {
+    window.appData.notes[blockId] = notesEl.value;
+    window.saveLocal(); syncFirestore();
+  };
+
+  document.getElementById('panel-overlay').classList.add('open');
+  document.getElementById('panel').classList.add('open');
+  document.addEventListener('keydown', onEscKey);
+}
+
+function closePanel() {
+  document.getElementById('panel-overlay').classList.remove('open');
+  document.getElementById('panel').classList.remove('open');
+  document.removeEventListener('keydown', onEscKey);
+  window.currentPanelId = null;
+}
+
+function onEscKey(e) { if (e.key === 'Escape') closePanel(); }
+
+window.renderTopics = function(blockId, topics) {
+  const ul = document.getElementById('panel-topics');
+  ul.innerHTML = '';
+  let done = 0;
+  topics.forEach(t => {
+    const isDone = !!window.appData.topicDone[t.id];
+    if (isDone) done++;
+    const li = document.createElement('li');
+    li.className = 'topic-item' + (isDone ? ' done' : '');
+    const validPriorities = ['high', 'exam', 'concept'];
+    const safeP = validPriorities.includes(t.priority) ? t.priority : 'concept';
+    li.innerHTML = `
+      <div class="topic-check">${isDone ? '✓' : ''}</div>
+      <div class="priority-dot ${safeP}"></div>
+      <div class="topic-name"></div>
+    `;
+    li.querySelector('.topic-name').textContent = t.name;
+    li.addEventListener('click', () => {
+      window.appData.topicDone[t.id] = !window.appData.topicDone[t.id];
+      window.saveLocal(); syncFirestore();
+      window.renderTopics(blockId, topics);
+    });
+    ul.appendChild(li);
+  });
+  const pct = topics.length ? Math.round(done / topics.length * 100) : 0;
+  document.getElementById('panel-bar-fill').style.width = pct + '%';
+  document.getElementById('panel-bar-label').textContent =
+    `${done} / ${topics.length} topics · ${pct}%`;
+};
+
+// ── POMODORO ───────────────────────────────────────────────────────────────
+const POMO_WORK  = 25 * 60;
+const POMO_BREAK =  5 * 60;
+let pomoRemaining = POMO_WORK;
+let pomoRunning   = false;
+let pomoInterval  = null;
+let pomoIsBreak   = false;
+
+function pomoBeep(freq, dur, vol) {
+  try {
+    const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = freq; osc.type = 'sine';
+    gain.gain.setValueAtTime(vol || 0.15, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  } catch(e) {}
+}
+
+function pomoPing() {
+  if (pomoIsBreak) {
+    [523, 659, 784].forEach((f, i) => setTimeout(() => pomoBeep(f, 0.3, 0.15), i * 160));
+    tryNotify('Break หมดแล้ว! กลับมา Focus 🍅');
+  } else {
+    [392, 330, 262].forEach((f, i) => setTimeout(() => pomoBeep(f, 0.35, 0.15), i * 180));
+    tryNotify('Focus session เสร็จ! พัก 5 นาที ☕');
+  }
+}
+
+function tryNotify(msg) {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification('Pomodoro', { body: msg });
+  }
+}
+
+function pomoTick() {
+  if (pomoRemaining <= 0) {
+    clearInterval(pomoInterval); pomoInterval = null; pomoRunning = false;
+    pomoIsBreak = !pomoIsBreak;
+    pomoRemaining = pomoIsBreak ? POMO_BREAK : POMO_WORK;
+    pomoPing(); renderPomo(); return;
+  }
+  pomoRemaining--;
+  renderPomo();
+}
+
+function togglePomo(e) {
+  e.stopPropagation();
+  if (pomoRunning) {
+    clearInterval(pomoInterval); pomoInterval = null; pomoRunning = false;
+  } else {
+    pomoInterval = setInterval(pomoTick, 1000); pomoRunning = true;
+  }
+  renderPomo();
+}
+
+function resetPomo(e) {
+  e.stopPropagation();
+  clearInterval(pomoInterval); pomoInterval = null;
+  pomoRunning = false; pomoIsBreak = false; pomoRemaining = POMO_WORK;
+  renderPomo();
+}
+
+function renderPomo() {
+  const m = String(Math.floor(pomoRemaining / 60)).padStart(2,'0');
+  const s = String(pomoRemaining % 60).padStart(2,'0');
+  document.getElementById('pomo-time').textContent  = `${m}:${s}`;
+  document.getElementById('pomo-label').textContent = pomoIsBreak ? 'BREAK' : 'FOCUS';
+  document.getElementById('pomo-play').textContent  = pomoRunning ? '⏸' : '▶';
+  document.getElementById('pomo-pill').classList.toggle('is-break', pomoIsBreak);
+}
+
+if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+renderPomo();
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+initTheme();
+loadLocal();
+
+document.querySelectorAll('.block-card[data-id]').forEach(card => {
+  window.updateCard(card);
+  card.querySelector('.status-badge').addEventListener('click', e => {
+    e.stopPropagation();
+    cycleStatus(card);
+  });
+  card.addEventListener('click', () => openPanel(card.dataset.id));
+});
+
+window.updateSummary();
+renderActivities();
+renderThisWeek();
+</script>
+</body>
+</html>
