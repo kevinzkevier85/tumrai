@@ -36,66 +36,65 @@
   };
   // ───────────────────────────────────────────────────────────────────────
 
-  const FIREBASE_READY = FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY';
-  if (!FIREBASE_READY) return;
+  if (FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY') {
+    const app  = initializeApp(FIREBASE_CONFIG);
+    const auth = getAuth(app);
+    const db   = getFirestore(app);
+    let unsubscribe = null;
 
-  const app  = initializeApp(FIREBASE_CONFIG);
-  const auth = getAuth(app);
-  const db   = getFirestore(app);
-  let unsubscribe = null;
+    window._fbSignIn = async () => {
+      try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+      catch(e) { console.error('Sign-in failed', e); }
+    };
 
-  window._fbSignIn = async () => {
-    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
-    catch(e) { console.error('Sign-in failed', e); }
-  };
-
-  window._fbSignOut = async () => {
-    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-    await signOut(auth);
-  };
-
-  window._fbSync = async (data) => {
-    const user = auth.currentUser;
-    if (!user) return;
-    try { await setDoc(doc(db, 'users', user.uid, 'scheduleData', 'v2'), data); }
-    catch(e) { console.warn('Firestore write failed', e); }
-  };
-
-  onAuthStateChanged(auth, async (user) => {
-    if (typeof updateAuthUI === 'function') updateAuthUI(user);
-    if (user) {
-      const ref  = doc(db, 'users', user.uid, 'scheduleData', 'v2');
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        const remote = snap.data();
-        ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
-          if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
-        });
-        window.saveLocal();
-        document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
-        window.updateSummary();
-      } else {
-        await window._fbSync(window.appData);
-      }
-
-      if (unsubscribe) unsubscribe();
-      unsubscribe = onSnapshot(ref, s => {
-        if (!s.exists()) return;
-        const remote = s.data();
-        ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
-          if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
-        });
-        window.saveLocal();
-        document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
-        window.updateSummary();
-        if (window.currentPanelId && TOPICS[window.currentPanelId]) {
-          window.renderTopics(window.currentPanelId, TOPICS[window.currentPanelId].topics);
-        }
-      });
-    } else {
+    window._fbSignOut = async () => {
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-    }
-  });
+      await signOut(auth);
+    };
+
+    window._fbSync = async (data) => {
+      const user = auth.currentUser;
+      if (!user) return;
+      try { await setDoc(doc(db, 'users', user.uid, 'scheduleData', 'v2'), data); }
+      catch(e) { console.warn('Firestore write failed', e); }
+    };
+
+    onAuthStateChanged(auth, async (user) => {
+      if (typeof updateAuthUI === 'function') updateAuthUI(user);
+      if (user) {
+        const ref  = doc(db, 'users', user.uid, 'scheduleData', 'v2');
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const remote = snap.data();
+          ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
+            if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
+          });
+          window.saveLocal();
+          document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
+          window.updateSummary();
+        } else {
+          await window._fbSync(window.appData);
+        }
+
+        if (unsubscribe) unsubscribe();
+        unsubscribe = onSnapshot(ref, s => {
+          if (!s.exists()) return;
+          const remote = s.data();
+          ['blockStatus','topicDone','notes','pdfLinks'].forEach(k => {
+            if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
+          });
+          window.saveLocal();
+          document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
+          window.updateSummary();
+          if (window.currentPanelId && TOPICS[window.currentPanelId]) {
+            window.renderTopics(window.currentPanelId, TOPICS[window.currentPanelId].topics);
+          }
+        });
+      } else {
+        if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      }
+    });
+  }
 </script>
 
 <style>
