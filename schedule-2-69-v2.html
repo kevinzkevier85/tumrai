@@ -14,6 +14,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ตารางเรียน ปี 2/69</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#10b981">
+<link rel="apple-touch-icon" href="icon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
 
 <!-- Firebase SDK -->
@@ -707,6 +710,224 @@ body {
 [data-theme="dark"] .pomo-btn:hover { background: rgba(255,255,255,.35); }
 
 @media (max-width: 480px) { .panel { width: 100vw; } }
+
+/* ── HEADER CONTROLS ─────────────────────────────────────────────────── */
+.ctrl-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: .9rem;
+  cursor: pointer;
+  transition: background .15s;
+  color: var(--text);
+}
+.ctrl-btn:hover { background: var(--border); }
+.settings-menu { position: relative; }
+.settings-dropdown {
+  position: absolute;
+  top: calc(100% + 4px); right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  padding: 4px;
+  min-width: 155px;
+  display: none;
+  z-index: 50;
+}
+.settings-dropdown.open { display: block; }
+.settings-item {
+  padding: 8px 12px;
+  font-size: .78rem;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 5px;
+  transition: background .1s;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  font-family: 'Sarabun', sans-serif;
+}
+.settings-item:hover { background: var(--border); }
+
+/* ── SHARE BANNER ─────────────────────────────────────────────────────── */
+.share-banner {
+  max-width: 700px;
+  margin: 0 auto 14px;
+  background: var(--done-bg);
+  border: 1px solid rgba(16,185,129,.3);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: .76rem;
+  color: var(--accent);
+  display: none;
+  align-items: center;
+  gap: 8px;
+}
+.share-banner.visible { display: flex; }
+[data-theme="dark"] .share-banner { border-color: rgba(105,240,174,.3); }
+
+/* ── TOAST ────────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  bottom: 80px; left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: .76rem;
+  color: var(--text);
+  box-shadow: 0 4px 20px rgba(0,0,0,.12);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0;
+  transition: opacity .3s, transform .3s;
+  pointer-events: none;
+  z-index: 200;
+  white-space: nowrap;
+}
+.toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast-close {
+  background: none; border: none;
+  color: var(--muted); cursor: pointer;
+  font-size: .9rem; padding: 0 2px; line-height: 1;
+}
+.toast-action {
+  font-size: .72rem; color: var(--accent);
+  cursor: pointer; text-decoration: underline;
+  background: none; border: none;
+  font-family: 'Sarabun', sans-serif;
+}
+
+/* ── RESOURCES TAB ────────────────────────────────────────────────────── */
+.res-filter {
+  max-width: 700px;
+  margin: 0 auto 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.res-chip {
+  padding: 4px 12px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: .7rem;
+  font-family: 'IBM Plex Mono', monospace;
+  cursor: pointer;
+  transition: all .15s;
+}
+.res-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+[data-theme="dark"] .res-chip.active { color: #0f1117; }
+.res-grid {
+  max-width: 700px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding-bottom: 40px;
+}
+@media (max-width: 480px) { .res-grid { grid-template-columns: 1fr; } }
+.res-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform .1s, background .15s;
+  text-decoration: none;
+  display: block;
+}
+.res-card:hover { transform: translateY(-2px); background: var(--card-hover); }
+.res-thumb {
+  width: 100%; aspect-ratio: 16/9;
+  object-fit: cover; background: var(--border); display: block;
+}
+.res-thumb-placeholder {
+  width: 100%; aspect-ratio: 16/9;
+  background: var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.8rem;
+}
+.res-info { padding: 8px 10px; }
+.res-title { font-size: .78rem; font-weight: 600; color: var(--text); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.res-meta { font-size: .62rem; color: var(--muted); font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; gap: 6px; }
+.res-empty { text-align: center; padding: 60px 20px; font-size: .78rem; color: var(--muted); opacity: .6; grid-column: 1 / -1; }
+
+/* ── PANEL OBJECTIVES ─────────────────────────────────────────────────── */
+.obj-view {
+  font-size: .78rem; color: var(--text); line-height: 1.6;
+  min-height: 24px; cursor: pointer;
+  padding: 6px 8px; border-radius: 6px;
+  transition: background .1s;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+}
+.obj-view:hover { background: var(--border); }
+.obj-view.empty { color: var(--muted); font-style: italic; opacity: .6; }
+.obj-view-text { flex: 1; }
+.obj-edit-icon { font-size: .7rem; color: var(--muted); flex-shrink: 0; margin-top: 2px; }
+.obj-input {
+  width: 100%; border: 1px solid var(--border); border-radius: 7px;
+  padding: 8px 10px; font-family: 'Sarabun', sans-serif;
+  font-size: .78rem; color: var(--text); background: var(--bg);
+  resize: vertical; outline: none; min-height: 60px;
+}
+.obj-input:focus { border-color: var(--accent); }
+
+/* ── PANEL RESOURCES LIST ─────────────────────────────────────────────── */
+.panel-res-list { list-style: none; margin-bottom: 8px; }
+.panel-res-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 4px; border-bottom: 1px solid var(--border);
+}
+.panel-res-item:last-child { border-bottom: none; }
+.panel-res-thumb {
+  width: 40px; height: 30px; object-fit: cover;
+  border-radius: 4px; background: var(--border); flex-shrink: 0; display: block;
+}
+.panel-res-placeholder {
+  width: 40px; height: 30px; border-radius: 4px;
+  background: var(--border); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: .85rem;
+}
+.panel-res-info { flex: 1; min-width: 0; }
+.panel-res-title { font-size: .76rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel-res-meta { font-size: .62rem; color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+.panel-res-link {
+  font-size: .75rem; color: var(--accent); flex-shrink: 0;
+  text-decoration: none; border: 1px solid rgba(16,185,129,.3);
+  border-radius: 5px; padding: 2px 8px;
+}
+[data-theme="dark"] .panel-res-link { border-color: rgba(105,240,174,.3); }
+
+/* ── ADD RESOURCE FORM ────────────────────────────────────────────────── */
+.add-res-form { display: none; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.add-res-form.open { display: block; }
+.form-field { margin-bottom: 10px; }
+.form-label { font-size: .62rem; font-family: 'IBM Plex Mono', monospace; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; display: block; }
+.form-input { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); font-family: 'Sarabun', sans-serif; font-size: .8rem; outline: none; transition: border-color .15s; }
+.form-input:focus { border-color: var(--accent); }
+.form-select { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); font-family: 'Sarabun', sans-serif; font-size: .8rem; outline: none; }
+.form-error { font-size: .65rem; color: var(--rust); margin-top: 3px; display: none; }
+.form-error.visible { display: block; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.btn-cancel { padding: 6px 14px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--muted); font-family: 'Sarabun', sans-serif; font-size: .78rem; cursor: pointer; }
+.btn-save { padding: 6px 14px; border-radius: 7px; border: none; background: var(--accent); color: #fff; font-family: 'Sarabun', sans-serif; font-size: .78rem; cursor: pointer; }
+[data-theme="dark"] .btn-save { color: #0f1117; }
+
+/* ── RESOURCE BADGE (on block card) ──────────────────────────────────── */
+.res-count-badge {
+  font-size: .6rem; font-family: 'IBM Plex Mono', monospace;
+  color: var(--muted); padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 99px;
+  margin-left: 6px; vertical-align: middle;
+}
 </style>
 </head>
 <body>
@@ -1612,6 +1833,7 @@ renderPomo();
 // ── COMMITTEE EMAILS — เพิ่ม email ของ committee ที่นี่ ──────────────────
 const COMMITTEE_EMAILS = [
   // 'example@gmail.com',
+  'kevinzkevier85@gmail.com',
 ];
 
 window.userRole = 'public';
@@ -1637,6 +1859,11 @@ function updateAuthUI(user) {
   const photo = user.photoURL
     ? `<img class="user-avatar" src="${user.photoURL}" alt="">` : '';
   area.innerHTML = `${photo}${badge}<button class="auth-btn" onclick="window._fbSignOut()">ออก</button>`;
+}
+
+// ── SERVICE WORKER ────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/tumrai/service-worker.js');
 }
 
 // ── INIT ───────────────────────────────────────────────────────────────────
