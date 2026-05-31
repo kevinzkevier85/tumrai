@@ -938,10 +938,25 @@ body {
   <p>25/05/2026 → 25/05/2027</p>
   <span class="leaf-badge">◆ MED YEAR 2</span>
   <div class="header-actions">
+    <button class="ctrl-btn" id="share-btn" onclick="copyShareLink()" title="Copy share link">🔗</button>
+    <div class="settings-menu" id="settings-menu">
+      <button class="ctrl-btn" onclick="toggleSettingsMenu()" title="Settings">⚙️</button>
+      <div class="settings-dropdown" id="settings-dropdown">
+        <button class="settings-item" onclick="exportData()">📤 Export JSON</button>
+        <button class="settings-item" onclick="document.getElementById('import-file').click()">📥 Import JSON</button>
+      </div>
+    </div>
+    <input type="file" id="import-file" accept=".json" style="display:none" onchange="handleImportFile(event)">
     <div id="auth-area"></div>
     <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()">🌙</button>
   </div>
 </header>
+
+<!-- SHARE BANNER (show only in ?view=share mode) -->
+<div class="share-banner" id="share-banner">
+  <span>📖</span>
+  <span>View-only · ตารางเรียน ปี 2 / 69</span>
+</div>
 
 <!-- THIS WEEK STRIP (always visible) -->
 <div class="this-week">
@@ -955,6 +970,7 @@ body {
 <div class="tab-bar">
   <button class="tab-btn active" data-tab="schedule"    onclick="switchTab('schedule')">ตารางเรียน</button>
   <button class="tab-btn"        data-tab="activities"  onclick="switchTab('activities')">กิจกรรม</button>
+  <button class="tab-btn" data-tab="resources" onclick="switchTab('resources')">Resources</button>
 </div>
 
 <!-- =====================================================================
@@ -1273,6 +1289,16 @@ body {
   </div>
 </div>
 
+<!-- =====================================================================
+     RESOURCES VIEW
+     ===================================================================== -->
+<div id="resources-view" style="display:none;">
+  <div class="res-filter" id="res-filter"></div>
+  <div class="res-grid" id="res-grid">
+    <div class="res-empty">ยังไม่มี resources<br><span style="font-size:.65rem;opacity:.5;">เพิ่มผ่าน panel ของแต่ละ block</span></div>
+  </div>
+</div>
+
 <!-- PANEL -->
 <div class="panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
 <div class="panel" id="panel" role="dialog" aria-modal="true">
@@ -1296,6 +1322,13 @@ body {
     <div class="panel-section-label">Notes</div>
     <textarea class="panel-notes" id="panel-notes" placeholder="จดโน้ตสั้นๆ เกี่ยวกับวิชานี้..."></textarea>
   </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast">
+  <span id="toast-msg"></span>
+  <button class="toast-action" id="toast-action" style="display:none"></button>
+  <button class="toast-close" onclick="hideToast()">✕</button>
 </div>
 
 <!-- POMODORO -->
