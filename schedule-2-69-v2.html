@@ -1379,6 +1379,27 @@ body {
 </div>
 
 <script>
+// ── SHARE MODE ────────────────────────────────────────────────────────────
+const SHARE_MODE = new URLSearchParams(location.search).has('view');
+const SHARE_OWNER = new URLSearchParams(location.search).get('owner') || null;
+
+// ── DRIVE UTILITIES ───────────────────────────────────────────────────────
+function extractDriveId(url) {
+  const pathMatch = url.match(/\/d\/([-\w]{25,})/);
+  if (pathMatch) return pathMatch[1];
+  const paramMatch = url.match(/[?&]id=([-\w]{25,})/);
+  if (paramMatch) return paramMatch[1];
+  return null;
+}
+function driveThumbUrl(id) {
+  return `https://drive.google.com/thumbnail?id=${id}&sz=w200`;
+}
+function driveOpenUrl(id) {
+  return `https://drive.google.com/file/d/${id}/view`;
+}
+const TYPE_ICON = { slides: '📊', pdf: '📄', image: '🖼', doc: '📝' };
+const ACT_ICON  = { exam: '📝', event: '📅', submission: '📤', meeting: '👥' };
+
 // ── THEME ─────────────────────────────────────────────────────────────────
 function initTheme() {
   if (localStorage.getItem('theme-pref') === 'dark') {
@@ -1546,6 +1567,8 @@ const ACTIVITIES = [
     location: "ห้อง A101",
     link: "",
     category: "วิชาการ",
+    type: "event",
+    blockId: "b1",
     visibleTo: "public"
   }
 ];
@@ -1555,7 +1578,16 @@ const STATES = ['upcoming','active','done'];
 const LABELS = { upcoming:'UPCOMING', active:'ACTIVE', done:'DONE' };
 const LS_KEY = 'schedule-2-69-v2';
 
-window.appData = { blockStatus:{}, topicDone:{}, notes:{}, pdfLinks:{} };
+window.appData = {
+  blockStatus:  {},
+  topicDone:    {},
+  notes:        {},
+  pdfLinks:     {},
+  resources:    {},
+  objectives:   {},
+  examDates:    {},
+  backupMeta:   { lastExport: null }
+};
 
 window.saveLocal = function() {
   localStorage.setItem(LS_KEY, JSON.stringify(window.appData));
@@ -1564,7 +1596,12 @@ window.saveLocal = function() {
 function loadLocal() {
   try {
     const saved = JSON.parse(localStorage.getItem(LS_KEY));
-    if (saved) window.appData = saved;
+    if (saved) {
+      ['blockStatus','topicDone','notes','pdfLinks',
+       'resources','objectives','examDates','backupMeta'].forEach(k => {
+        if (saved[k] !== undefined) window.appData[k] = saved[k];
+      });
+    }
   } catch(e) {}
 }
 
