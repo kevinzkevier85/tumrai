@@ -1317,7 +1317,44 @@ body {
     </div>
   </div>
   <div class="panel-body">
-    <div class="panel-section-label">Topics</div>
+    <div style="display:flex;align-items:center;margin-bottom:8px;margin-top:4px;">
+      <div class="panel-section-label" style="margin:0;flex:1;">Objectives</div>
+    </div>
+    <div id="panel-objectives"><!-- rendered by renderPanelObjectives() --></div>
+
+    <div style="display:flex;align-items:center;margin-bottom:8px;margin-top:16px;">
+      <div class="panel-section-label" style="margin:0;flex:1;">Resources</div>
+      <span id="panel-res-add-btn" onclick="showAddResourceForm(window.currentPanelId)"
+            style="font-size:.7rem;color:var(--accent);cursor:pointer;font-family:'IBM Plex Mono',monospace;display:none;">+ Add</span>
+    </div>
+    <div class="add-res-form" id="add-res-form">
+      <div class="form-field">
+        <label class="form-label">Paste Google Drive link</label>
+        <input class="form-input" id="res-url-input" type="url" placeholder="https://drive.google.com/file/d/...">
+        <div class="form-error" id="res-url-error">ลิงก์ไม่ถูกต้อง — ต้องเป็น Google Drive URL</div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">Title</label>
+        <input class="form-input" id="res-title-input" type="text" placeholder="สไลด์ Week 1-2">
+        <div class="form-error" id="res-title-error">กรุณากรอกชื่อ</div>
+      </div>
+      <div class="form-field">
+        <label class="form-label">Type</label>
+        <select class="form-select" id="res-type-input">
+          <option value="slides">📊 Slides</option>
+          <option value="pdf">📄 PDF</option>
+          <option value="image">🖼 Image</option>
+          <option value="doc">📝 Doc</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button class="btn-cancel" onclick="hideAddResourceForm()">Cancel</button>
+        <button class="btn-save" onclick="saveResource(window.currentPanelId)">Save</button>
+      </div>
+    </div>
+    <ul class="panel-res-list" id="panel-res-list"></ul>
+
+    <div class="panel-section-label" style="margin-top:16px;">Topics</div>
     <ul class="topic-list" id="panel-topics"></ul>
     <div class="panel-section-label">Notes</div>
     <textarea class="panel-notes" id="panel-notes" placeholder="จดโน้ตสั้นๆ เกี่ยวกับวิชานี้..."></textarea>
