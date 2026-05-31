@@ -1425,9 +1425,70 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === tab)
   );
-  document.getElementById('schedule-view').style.display   = tab === 'schedule'    ? '' : 'none';
-  document.getElementById('activities-view').style.display = tab === 'activities'  ? '' : 'none';
+  document.getElementById('schedule-view').style.display   = tab === 'schedule'   ? '' : 'none';
+  document.getElementById('activities-view').style.display = tab === 'activities' ? '' : 'none';
+  document.getElementById('resources-view').style.display  = tab === 'resources'  ? '' : 'none';
+  if (tab === 'resources') renderResources(null);
 }
+
+// ── SHARE MODE SETUP ──────────────────────────────────────────────────────
+function applyShareMode() {
+  if (!SHARE_MODE) return;
+  document.getElementById('share-banner').classList.add('visible');
+
+  const shareBtn     = document.getElementById('share-btn');
+  const settingsMenu = document.getElementById('settings-menu');
+  const pomoPill     = document.querySelector('.pomo-widget');
+  if (shareBtn)     shareBtn.style.display     = 'none';
+  if (settingsMenu) settingsMenu.style.display = 'none';
+  if (pomoPill)     pomoPill.style.display     = 'none';
+
+  // status badges become visual-only
+  document.querySelectorAll('.status-badge').forEach(b => b.style.pointerEvents = 'none');
+
+  // hide notes textarea
+  const notesEl = document.getElementById('panel-notes');
+  if (notesEl) notesEl.style.display = 'none';
+
+  // load shared resources from owner uid in URL
+  if (SHARE_OWNER) {
+    const tryLoad = () => {
+      if (typeof window._fbLoadShared === 'function') {
+        window._fbLoadShared(SHARE_OWNER).then(() => {
+          document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
+        });
+      } else {
+        setTimeout(tryLoad, 400);
+      }
+    };
+    setTimeout(tryLoad, 300);
+  }
+}
+
+// ── HEADER CONTROLS ───────────────────────────────────────────────────────
+function copyShareLink() {
+  const uid    = window._currentUserId || '';
+  const params = uid ? `?view=share&owner=${uid}` : '?view=share';
+  const url    = location.origin + location.pathname + params;
+  if (navigator.clipboard && location.protocol !== 'file:') {
+    navigator.clipboard.writeText(url).then(() => showToast('✓ Copied share link', null, null));
+  } else {
+    showToast('Share URL (copy manually): ' + url, null, null, 12000);
+  }
+}
+
+function toggleSettingsMenu() {
+  document.getElementById('settings-dropdown').classList.toggle('open');
+}
+
+// close settings dropdown on outside click
+document.addEventListener('click', e => {
+  const menu = document.getElementById('settings-menu');
+  if (menu && !menu.contains(e.target)) {
+    const dd = document.getElementById('settings-dropdown');
+    if (dd) dd.classList.remove('open');
+  }
+});
 
 // ── CURRICULUM DATA ───────────────────────────────────────────────────────
 // ── EDIT TOPICS HERE ─────────────────────────────────────────────────────
