@@ -62,9 +62,33 @@
       catch(e) { console.warn('Firestore write failed', e); }
     };
 
+    window._fbSyncShared = async (sharedData) => {
+      const user = auth.currentUser;
+      if (!user) return;
+      try {
+        await setDoc(doc(db, 'shared', user.uid, 'resources', 'v2'), sharedData);
+      } catch(e) { console.warn('Firestore shared write failed', e); }
+    };
+
+    window._fbLoadShared = async (ownerId) => {
+      try {
+        const ref  = doc(db, 'shared', ownerId, 'resources', 'v2');
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          const remote = snap.data();
+          ['resources','objectives','examDates'].forEach(k => {
+            if (remote[k]) window.appData[k] = { ...window.appData[k], ...remote[k] };
+          });
+          window.saveLocal();
+        }
+      } catch(e) { console.warn('Firestore shared read failed', e); }
+      return Promise.resolve();
+    };
+
     onAuthStateChanged(auth, async (user) => {
       if (typeof updateAuthUI === 'function') updateAuthUI(user);
       if (user) {
+        window._currentUserId = user.uid;
         const ref  = doc(db, 'users', user.uid, 'scheduleData', 'v2');
         const snap = await getDoc(ref);
         if (snap.exists()) {
@@ -78,6 +102,10 @@
         } else {
           await window._fbSync(window.appData);
         }
+
+        // load shared resources
+        await window._fbLoadShared(user.uid);
+        document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
 
         if (unsubscribe) unsubscribe();
         unsubscribe = onSnapshot(ref, s => {
@@ -1668,6 +1696,13 @@ function loadLocal() {
 
 function syncFirestore() {
   if (typeof window._fbSync === 'function') window._fbSync(window.appData);
+  if (typeof window._fbSyncShared === 'function') {
+    window._fbSyncShared({
+      resources:  window.appData.resources  || {},
+      objectives: window.appData.objectives || {},
+      examDates:  window.appData.examDates  || {}
+    });
+  }
 }
 
 // ── DATE HELPERS ──────────────────────────────────────────────────────────
@@ -1730,6 +1765,62 @@ function renderThisWeek() {
   `).join('');
 }
 
+// ── RESOURCES TAB ─────────────────────────────────────────────────────────
+function renderResources(activeBlockId) {
+  if (!window.appData.resources) window.appData.resources = {};
+
+  const allItems = [];
+  const blocksWithRes = [];
+  document.querySelectorAll('.block-card[data-id]').forEach(card => {
+    const id  = card.dataset.id;
+    const res = window.appData.resources[id];
+    if (res && res.length) {
+      const name = card.querySelector('h3').textContent.trim();
+      blocksWithRes.push({ id, name });
+      res.forEach(r => allItems.push({ ...r, blockId: id, blockName: name }));
+    }
+  });
+
+  const filterEl = document.getElementById('res-filter');
+  if (filterEl) {
+    filterEl.innerHTML = [{ id: null, name: 'ทั้งหมด' }, ...blocksWithRes].map(b => {
+      const label = b.name.length > 22 ? b.name.slice(0, 20) + '…' : b.name;
+      const active = activeBlockId === b.id ? ' active' : '';
+      return `<button class="res-chip${active}" onclick="renderResources(${b.id ? `'${b.id}'` : 'null'})">${label}</button>`;
+    }).join('');
+  }
+
+  const filtered = activeBlockId ? allItems.filter(r => r.blockId === activeBlockId) : allItems;
+
+  const gridEl = document.getElementById('res-grid');
+  if (!gridEl) return;
+  if (!filtered.length) {
+    gridEl.innerHTML = `<div class="res-empty">ยังไม่มี resources<br><span style="font-size:.65rem;opacity:.5;">เพิ่มผ่าน panel ของแต่ละ block</span></div>`;
+    return;
+  }
+
+  gridEl.innerHTML = filtered.map(r => {
+    const thumb   = driveThumbUrl(r.driveId);
+    const openUrl = driveOpenUrl(r.driveId);
+    const icon    = TYPE_ICON[r.type] || '📎';
+    const bname   = r.blockName.length > 18 ? r.blockName.slice(0, 16) + '…' : r.blockName;
+    return `
+      <a class="res-card" href="${openUrl}" target="_blank" rel="noopener">
+        <img class="res-thumb" src="${thumb}" alt="${r.title}"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="res-thumb-placeholder" style="display:none;">${icon}</div>
+        <div class="res-info">
+          <div class="res-title">${r.title}</div>
+          <div class="res-meta">
+            <span>${icon} ${r.type}</span>
+            <span style="opacity:.4;">·</span>
+            <span>${bname}</span>
+          </div>
+        </div>
+      </a>`;
+  }).join('');
+}
+
 // ── ACTIVITIES TIMELINE ───────────────────────────────────────────────────
 const CAT_COLOR = { วิชาการ:'blue', กีฬา:'orange', สังคม:'purple', สโมสร:'green' };
 
@@ -1741,20 +1832,27 @@ function renderActivities() {
   }
   const sorted = [...ACTIVITIES].sort((a, b) => a.date.localeCompare(b.date));
   container.innerHTML = sorted.map(a => {
-    const d    = parseLocalDate(a.date);
-    const dd   = String(d.getDate()).padStart(2,'0');
-    const mm   = String(d.getMonth()+1).padStart(2,'0');
-    const yyyy = d.getFullYear();
-    const status = autoStatus(a.date, a.endDate || a.date);
-    const col    = CAT_COLOR[a.category] || 'muted';
+    const d      = parseLocalDate(a.date);
+    const dd     = String(d.getDate()).padStart(2,'0');
+    const mm     = String(d.getMonth()+1).padStart(2,'0');
+    const yyyy   = d.getFullYear();
+    const status   = autoStatus(a.date, a.endDate || a.date);
     const actClass = status === 'done' ? 'status-done' : status === 'active' ? 'status-active' : '';
+
+    // color: prefer blockId's block card color, fall back to category color
+    const linkedCard = a.blockId
+      ? document.querySelector(`.block-card[data-id="${a.blockId}"]`)
+      : null;
+    const col = (linkedCard ? linkedCard.dataset.color : null) || CAT_COLOR[a.category] || 'muted';
+
+    const icon = ACT_ICON[a.type] || ACT_ICON.event;
     return `
       <div class="block">
         <div class="block-date">${dd}-${mm}-${yyyy}</div>
         <div class="block-line"><div class="block-dot" data-color="${col}"></div></div>
         <div class="act-card ${actClass}" data-color="${col}">
           <span class="status-badge ${status}">${LABELS[status]}</span>
-          <h3>${a.title}</h3>
+          <h3>${icon} ${a.title}</h3>
           ${a.location ? `<div class="sub">${a.location}</div>` : ''}
           <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <span class="cat-badge" data-color="${col}">${a.category}</span>
@@ -1774,7 +1872,7 @@ window.updateCard = function(card) {
   const status = window.appData.blockStatus[id] || autoStatus(card.dataset.start, card.dataset.end);
 
   const badge = card.querySelector('.status-badge');
-  badge.className  = 'status-badge ' + status;
+  badge.className   = 'status-badge ' + status;
   badge.textContent = LABELS[status];
 
   card.classList.remove('status-done','status-active');
@@ -1794,13 +1892,29 @@ window.updateCard = function(card) {
     pct = Math.min(100, Math.max(0, Math.round(elapsed / total * 100)));
     const remaining = daysBetween(today, end);
     daysText = `เหลืออีก ${remaining} วัน`;
-    if (cdEl) cdEl.textContent = `สอบอีก ${remaining} วัน`;
+    const examDateStr = window.appData.examDates && window.appData.examDates[id];
+    const examDate    = examDateStr ? parseLocalDate(examDateStr) : end;
+    const examDays    = daysBetween(today, examDate);
+    if (cdEl) cdEl.textContent = `สอบอีก ${examDays} วัน`;
   } else {
     const daysUntil = daysBetween(today, start);
     daysText = `อีก ${daysUntil} วันจะเริ่ม`;
   }
-  fill.style.width = pct + '%';
-  daysEl.textContent = daysText;
+  if (fill)   fill.style.width   = pct + '%';
+  if (daysEl) daysEl.textContent = daysText;
+
+  // resource badge
+  const progress = card.querySelector('.card-progress');
+  const existing = progress ? progress.querySelector('.res-count-badge') : null;
+  if (existing) existing.remove();
+  const resArr   = window.appData.resources && window.appData.resources[id];
+  const resCount = resArr ? resArr.length : 0;
+  if (resCount > 0 && progress) {
+    const rb = document.createElement('span');
+    rb.className = 'res-count-badge';
+    rb.textContent = `📎 ${resCount}`;
+    progress.appendChild(rb);
+  }
 };
 
 function cycleStatus(card) {
@@ -1841,8 +1955,16 @@ window.updateSummary = function() {
   const totalDays = daysBetween(yearStart, yearEnd);
   const elapsed   = Math.min(totalDays, Math.max(0, daysBetween(yearStart, today)));
   const remaining = Math.max(0, daysBetween(today, yearEnd));
+
+  let totalTopics = 0, doneTopics = 0;
+  Object.keys(TOPICS).forEach(blockId => {
+    const ts = TOPICS[blockId].topics;
+    totalTopics += ts.length;
+    ts.forEach(t => { if (window.appData.topicDone[t.id]) doneTopics++; });
+  });
+
   document.getElementById('summary-sub').textContent =
-    `ผ่านไปแล้ว ${elapsed} วัน · เหลืออีก ${remaining} วัน`;
+    `ผ่านไปแล้ว ${elapsed} วัน · เหลืออีก ${remaining} วัน · Topics ${doneTopics}/${totalTopics}`;
 };
 
 // ── PANEL ──────────────────────────────────────────────────────────────────
@@ -1866,6 +1988,8 @@ function openPanel(blockId) {
   else        { pdfBtn.href = '#';    pdfBtn.classList.remove('visible'); }
 
   window.renderTopics(blockId, data.topics);
+  renderPanelObjectives(blockId);
+  renderPanelResources(blockId);
 
   const notesEl = document.getElementById('panel-notes');
   notesEl.value   = window.appData.notes[blockId] || '';
@@ -1873,6 +1997,9 @@ function openPanel(blockId) {
     window.appData.notes[blockId] = notesEl.value;
     window.saveLocal(); syncFirestore();
   };
+
+  hideAddResourceForm();
+  if (notesEl) notesEl.style.display = SHARE_MODE ? 'none' : '';
 
   document.getElementById('panel-overlay').classList.add('open');
   document.getElementById('panel').classList.add('open');
@@ -1887,6 +2014,161 @@ function closePanel() {
 }
 
 function onEscKey(e) { if (e.key === 'Escape') closePanel(); }
+
+// ── PANEL OBJECTIVES ──────────────────────────────────────────────────────
+function renderPanelObjectives(blockId) {
+  const container = document.getElementById('panel-objectives');
+  if (!container) return;
+  const text = (window.appData.objectives && window.appData.objectives[blockId]) || '';
+
+  if (SHARE_MODE) {
+    container.innerHTML = `<div class="obj-view ${text ? '' : 'empty'}" style="cursor:default;">
+      <span class="obj-view-text">${text || '—'}</span>
+    </div>`;
+    return;
+  }
+
+  container.innerHTML = `<div class="obj-view ${text ? '' : 'empty'}" onclick="editObjective('${blockId}')">
+    <span class="obj-view-text">${text || 'เพิ่ม objectives...'}</span>
+    <span class="obj-edit-icon">✎</span>
+  </div>`;
+}
+
+function editObjective(blockId) {
+  const container = document.getElementById('panel-objectives');
+  const current = (window.appData.objectives && window.appData.objectives[blockId]) || '';
+  container.innerHTML = `<textarea class="obj-input" id="obj-edit-input" rows="3"
+    placeholder="เช่น เข้าใจ PK/PD, Drug interactions, ADR">${current}</textarea>`;
+  const input = document.getElementById('obj-edit-input');
+  input.focus();
+  const save = () => {
+    if (!window.appData.objectives) window.appData.objectives = {};
+    window.appData.objectives[blockId] = input.value.trim();
+    window.saveLocal();
+    syncFirestore();
+    renderPanelObjectives(blockId);
+  };
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { input.removeEventListener('blur', save); renderPanelObjectives(blockId); }
+  });
+}
+
+// ── PANEL RESOURCES ───────────────────────────────────────────────────────
+function renderPanelResources(blockId) {
+  const list   = document.getElementById('panel-res-list');
+  const addBtn = document.getElementById('panel-res-add-btn');
+  if (!list) return;
+  if (addBtn) addBtn.style.display = SHARE_MODE ? 'none' : '';
+
+  if (!window.appData.resources) window.appData.resources = {};
+  const resources = window.appData.resources[blockId] || [];
+
+  if (!resources.length) {
+    const legacyPdf = window.appData.pdfLinks && window.appData.pdfLinks[blockId];
+    if (legacyPdf) {
+      list.innerHTML = `
+        <li class="panel-res-item">
+          <div class="panel-res-placeholder">📄</div>
+          <div class="panel-res-info">
+            <div class="panel-res-title">PDF (legacy)</div>
+            <div class="panel-res-meta">pdf</div>
+          </div>
+          <a class="panel-res-link" href="${legacyPdf}" target="_blank" rel="noopener">↗</a>
+        </li>`;
+      return;
+    }
+    list.innerHTML = `<li style="padding:8px 4px;font-size:.72rem;color:var(--muted);opacity:.6;font-style:italic;">ยังไม่มีไฟล์${SHARE_MODE ? '' : ' · กด + Add เพื่อเพิ่ม'}</li>`;
+    return;
+  }
+
+  list.innerHTML = resources.map((r, idx) => {
+    const thumb   = driveThumbUrl(r.driveId);
+    const openUrl = driveOpenUrl(r.driveId);
+    const icon    = TYPE_ICON[r.type] || '📎';
+    const delBtn  = SHARE_MODE ? '' :
+      `<button onclick="deleteResource('${blockId}',${idx})"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem;padding:2px 4px;"
+        title="Remove">✕</button>`;
+    return `
+      <li class="panel-res-item">
+        <img class="panel-res-thumb" src="${thumb}" alt=""
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="panel-res-placeholder" style="display:none;">${icon}</div>
+        <div class="panel-res-info">
+          <div class="panel-res-title">${r.title}</div>
+          <div class="panel-res-meta">${icon} ${r.type}</div>
+        </div>
+        <a class="panel-res-link" href="${openUrl}" target="_blank" rel="noopener">↗</a>
+        ${delBtn}
+      </li>`;
+  }).join('');
+}
+
+function showAddResourceForm(blockId) {
+  if (SHARE_MODE || !blockId) return;
+  const form = document.getElementById('add-res-form');
+  if (!form) return;
+  form.classList.toggle('open');
+  if (form.classList.contains('open')) {
+    document.getElementById('res-url-input').value = '';
+    document.getElementById('res-title-input').value = '';
+    document.getElementById('res-url-error').classList.remove('visible');
+    document.getElementById('res-title-error').classList.remove('visible');
+    document.getElementById('res-url-input').focus();
+  }
+}
+
+function hideAddResourceForm() {
+  const form = document.getElementById('add-res-form');
+  if (form) form.classList.remove('open');
+}
+
+function saveResource(blockId) {
+  if (!blockId) return;
+  const urlInput   = document.getElementById('res-url-input');
+  const titleInput = document.getElementById('res-title-input');
+  const typeInput  = document.getElementById('res-type-input');
+  const urlErr     = document.getElementById('res-url-error');
+  const titleErr   = document.getElementById('res-title-error');
+
+  let valid = true;
+  const driveId = extractDriveId(urlInput.value.trim());
+  if (!driveId) { urlErr.classList.add('visible');   valid = false; }
+  else           { urlErr.classList.remove('visible'); }
+  if (!titleInput.value.trim()) { titleErr.classList.add('visible');   valid = false; }
+  else                          { titleErr.classList.remove('visible'); }
+  if (!valid) return;
+
+  if (!window.appData.resources) window.appData.resources = {};
+  if (!window.appData.resources[blockId]) window.appData.resources[blockId] = [];
+  window.appData.resources[blockId].push({
+    title:   titleInput.value.trim(),
+    driveId: driveId,
+    type:    typeInput.value
+  });
+
+  window.saveLocal();
+  syncFirestore();
+  hideAddResourceForm();
+  renderPanelResources(blockId);
+  const card = document.querySelector(`.block-card[data-id="${blockId}"]`);
+  if (card) window.updateCard(card);
+  const resView = document.getElementById('resources-view');
+  if (resView && resView.style.display !== 'none') renderResources(null);
+}
+
+function deleteResource(blockId, idx) {
+  if (!window.appData.resources || !window.appData.resources[blockId]) return;
+  window.appData.resources[blockId].splice(idx, 1);
+  window.saveLocal();
+  syncFirestore();
+  renderPanelResources(blockId);
+  const card = document.querySelector(`.block-card[data-id="${blockId}"]`);
+  if (card) window.updateCard(card);
+  const resView = document.getElementById('resources-view');
+  if (resView && resView.style.display !== 'none') renderResources(null);
+}
 
 window.renderTopics = function(blockId, topics) {
   const ul = document.getElementById('panel-topics');
@@ -2034,6 +2316,91 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/tumrai/service-worker.js');
 }
 
+// ── TOAST ─────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+
+function showToast(msg, actionLabel, actionFn, duration) {
+  const toast    = document.getElementById('toast');
+  const toastMsg = document.getElementById('toast-msg');
+  const toastAct = document.getElementById('toast-action');
+  toastMsg.textContent = msg;
+  if (actionLabel && actionFn) {
+    toastAct.textContent   = actionLabel;
+    toastAct.onclick       = () => { actionFn(); hideToast(); };
+    toastAct.style.display = '';
+  } else {
+    toastAct.style.display = 'none';
+  }
+  toast.classList.add('visible');
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(hideToast, duration || 4000);
+}
+
+function hideToast() {
+  const t = document.getElementById('toast');
+  if (t) t.classList.remove('visible');
+  if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+}
+
+// ── EXPORT / IMPORT ───────────────────────────────────────────────────────
+function exportData() {
+  document.getElementById('settings-dropdown').classList.remove('open');
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    version:    'v2',
+    blockStatus:  window.appData.blockStatus,
+    topicDone:    window.appData.topicDone,
+    notes:        window.appData.notes,
+    resources:    window.appData.resources   || {},
+    objectives:   window.appData.objectives  || {},
+    examDates:    window.appData.examDates   || {}
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `tumrai-backup-${new Date().toISOString().slice(0,10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.appData.backupMeta = { lastExport: Date.now() };
+  window.saveLocal();
+  showToast('✓ Backup downloaded', null, null);
+}
+
+function handleImportFile(event) {
+  document.getElementById('settings-dropdown').classList.remove('open');
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const parsed = JSON.parse(e.target.result);
+      ['blockStatus','topicDone','notes','resources','objectives','examDates'].forEach(k => {
+        if (parsed[k]) window.appData[k] = { ...window.appData[k], ...parsed[k] };
+      });
+      window.saveLocal();
+      syncFirestore();
+      showToast('✓ Data imported — reloading...', null, null, 2000);
+      setTimeout(() => location.reload(), 2100);
+    } catch(err) {
+      showToast('Import failed — invalid JSON file', null, null);
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
+}
+
+// ── AUTO-BACKUP REMINDER ──────────────────────────────────────────────────
+function checkBackupReminder() {
+  if (SHARE_MODE) return;
+  const last = window.appData.backupMeta?.lastExport;
+  const daysSince = last ? (Date.now() - last) / 86400000 : Infinity;
+  if (daysSince > 30) {
+    const daysText = last ? `${Math.floor(daysSince)} วันที่แล้ว` : 'ไม่เคยสำรอง';
+    showToast(`สำรองข้อมูลล่าสุด: ${daysText}`, 'Export ↓', exportData, 10000);
+  }
+}
+
 // ── INIT ───────────────────────────────────────────────────────────────────
 initTheme();
 loadLocal();
@@ -2050,6 +2417,8 @@ document.querySelectorAll('.block-card[data-id]').forEach(card => {
 window.updateSummary();
 renderActivities();
 renderThisWeek();
+checkBackupReminder();
+applyShareMode();
 </script>
 </body>
 </html>
