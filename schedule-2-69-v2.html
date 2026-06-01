@@ -103,8 +103,13 @@
           await window._fbSync(window.appData);
         }
 
-        // load shared resources
+        // load shared resources, then push any local data that never made it to Firestore
         await window._fbLoadShared(user.uid);
+        window._fbSyncShared({
+          resources:  window.appData.resources  || {},
+          objectives: window.appData.objectives || {},
+          examDates:  window.appData.examDates  || {}
+        });
         document.querySelectorAll('.block-card[data-id]').forEach(c => window.updateCard(c));
 
         if (unsubscribe) unsubscribe();
